@@ -1,34 +1,21 @@
 /* @flow */
 import logger from './logger'
+import { type StreamInfo } from './streamInfo'
+import { type Options } from './options'
 
 const RTCPeerConnection = window.RTCPeerConnection
 const RTCIceCandidate = window.RTCIceCandidate
 const RTCSessionDescription = window.RTCSessionDescription
 
 export default class Publisher {
-  constructor(
-    endpoint: string,
-    applicationName: string,
-    streamName: string,
-    sessionId: string,
-    options: {
-      video: { bitRate: number, frameRate: string, codec: string },
-      audio: { bitRate: number, codec: string },
-      peerConnection: { iceServers: Array<any>, iceTransportPolicy: string },
-      userData: object
-    }
-  ) {
+  constructor(endpoint: string, streamInfo: StreamInfo, options: Options) {
     this.stream = null
     this.ws = null
     this.pc = null
     this.endpoint = endpoint
-    this.streamInfo = {
-      applicationName: applicationName,
-      streamName: streamName,
-      sessionId: sessionId
-    }
+    this.streamInfo = streamInfo
     this.userData = {
-      sessionId: sessionId
+      sessionId: streamInfo.sessionId
     }
     this.videoConfig = {
       bitRate: 360,
@@ -65,12 +52,12 @@ export default class Publisher {
   }
 
   connect(stream: MediaStream.prototype) {
-    logger.write('PUBLISHER CONNECT', this.endpoint)
+    logger.info('CONNECT', this.endpoint)
     return this.disconnect()
       .then(() => {
         this.pc = new RTCPeerConnection(this.peerConnectionConfig)
         this.pc.onicecandidate = event => {
-          logger.write('PUBLISHER ON ICE CANDIDATE', event)
+          logger.info('ON ICE CANDIDATE', event)
         }
         if (typeof this.pc.addStream === 'undefined') {
           stream.getTracks().forEach(track => {
@@ -84,14 +71,14 @@ export default class Publisher {
       .then(this.createOffer.bind(this))
       .then(this.setLocalDescription.bind(this))
       .then(this.connectWebSocket.bind(this))
-      .then(e => {
-        logger.write('FINISH', e)
+      .then(() => {
+        this.stream = stream
         return stream
       })
   }
 
   disconnect() {
-    logger.write('PUBLISHER DISCONNECT', '')
+    logger.info('DISCONNECT', '')
     const closeStream = new Promise((resolve, _) => {
       if (this.stream) {
         this.stream.getTracks().forEach(track => {
@@ -101,7 +88,7 @@ export default class Publisher {
       this.stream = null
       return resolve()
     })
-    const closePeerConnection = new Promise((resolve, reject) => {
+    const closePeerConnection = new Promise((resolve, _) => {
       if (this.pc) {
         this.pc.close()
       }
@@ -119,24 +106,22 @@ export default class Publisher {
   }
 
   createOffer() {
-    return this.pc.createOffer().then(offer => {
-      logger.write('PUBLISHER OFFER', offer)
-      offer.sdp = this.createSignalingMessage(offer.sdp)
-      logger.write('PUBLISHER ENHANCE OFFER', offer)
-      return offer
+    return this.pc.createOffer().then(description => {
+      description.sdp = this.createSignalingMessage(description.sdp)
+      return description
     })
   }
 
-  connectWebSocket(offer: object) {
+  connectWebSocket(description: RTCSessionDescription.prototype) {
     return new Promise((resolve, reject) => {
       this.ws = new WebSocket(this.endpoint)
       this.ws.binaryType = 'arraybuffer'
       this.ws.onopen = () => {
-        logger.write('WEBSOCKET ON OPEN', offer)
-        this.sendPublishMessage(offer)
+        logger.info('WEBSOCKET ON OPEN', description)
+        this.sendPublishMessage(description)
       }
       this.ws.onmessage = async event => {
-        logger.write('WEBSOCKET ON MESSAGE', event)
+        logger.info('WEBSOCKET ON MESSAGE', event)
         const data = JSON.parse(event.data)
         const status = Number(data.status)
         if (status !== 200) {
@@ -144,13 +129,9 @@ export default class Publisher {
           return reject(data)
         } else {
           if (data.sdp !== undefined) {
-            this.pc.setRemoteDescription(new RTCSessionDescription(data.sdp))
+            this.setRemoteDescription(data)
           }
-          if (data.iceCandidates !== undefined) {
-            data.iceCandidates.forEach(iceCandidate => {
-              this.pc.addIceCandidate(new RTCIceCandidate(iceCandidate))
-            })
-          }
+          this.addIceCandidates(data)
         }
         if (this.ws !== null) {
           this.ws.close()
@@ -159,46 +140,48 @@ export default class Publisher {
         resolve()
       }
       this.ws.onclose = () => {
-        logger.write('WEBSOCKET ON CLOSE', '')
+        logger.info('WEBSOCKET ON CLOSE', '')
       }
       this.ws.onerror = async event => {
-        logger.write('WEBSOCKET ON ERROR', event)
+        logger.error('WEBSOCKET ON ERROR', event)
         await this.disconnect()
         reject(event)
       }
     })
   }
 
-  sendPublishMessage(offer: object) {
+  sendPublishMessage(description: RTCSessionDescription.prototype) {
     this.ws.send(
       JSON.stringify({
         direction: 'publish',
         command: 'sendOffer',
         streamInfo: this.streamInfo,
-        sdp: offer,
+        sdp: description,
         userData: this.userData
       })
     )
   }
 
-  setLocalDescription(offer: object) {
-    return this.pc.setLocalDescription(offer).then(() => offer)
+  setLocalDescription(description: RTCSessionDescription.prototype) {
+    return this.pc.setLocalDescription(description).then(() => description)
   }
 
-  setRemoteDescription(data: object) {
-    return this.pc.setRemoteDescription(new RTCSessionDescription(data.sdp))
+  setRemoteDescription(description: any) {
+    return this.pc.setRemoteDescription(
+      new RTCSessionDescription(description.sdp)
+    )
   }
 
-  addIceCandidates(data: object) {
-    logger.write('PUBLISHER ADD ICE CANDIDATES', data)
+  addIceCandidates(data: any) {
+    logger.info('ADD ICE CANDIDATES', data)
     if (data.iceCandidates !== undefined) {
       data.iceCandidates.forEach(iceCandidate => {
-        this.pc.addIceCandidates(new RTCIceCandidate(iceCandidate))
+        this.pc.addIceCandidate(new RTCIceCandidate(iceCandidate))
       })
     }
   }
 
-  createSignalingMessage(sdp) {
+  createSignalingMessage(sdp: string): string {
     let lines = sdp.split(/\r\n/)
     let section = 'header'
     let hitMID = false
@@ -309,7 +292,7 @@ export default class Publisher {
     return `${result.join('\r\n')}\r\n`
   }
 
-  addAudio(lines, audioLine) {
+  addAudio(lines: Array<string>, audioLine: string): Array<string> {
     let result = []
     let done = false
     lines.forEach(line => {
@@ -328,21 +311,16 @@ export default class Publisher {
     return result
   }
 
-  addVideo(lines, videoLine) {
-    logger.write('PUBLISHER BEFORE SDP', lines.join('\r\n'))
+  addVideo(lines: Array<string>, videoLine: string): Array<string> {
     let result = []
     let done = false
     let rtcpSize = false
-    let rtcpMux = false
     lines.forEach(line => {
       if (line.length === 0) {
         return
       }
       if (line.includes('a=rtcp-rsize')) {
         rtcpSize = true
-      }
-      if (line.includes('a=rtcp-mux')) {
-        rtcpMux = true
       }
     })
     lines.forEach(line => {
@@ -371,7 +349,6 @@ export default class Publisher {
         done = true
       }
     })
-    logger.write('PUBLISHER AFTER SDP', result.join('\r\n'))
     return result
   }
 
@@ -415,7 +392,7 @@ export default class Publisher {
     return str
   }
 
-  checkLine(line) {
+  checkLine(line: string): boolean {
     if (
       !line.startsWith('a=rtpmap') &&
       !line.startsWith('a=rtcp-fb') &&
@@ -443,7 +420,7 @@ export default class Publisher {
     return false
   }
 
-  genVideoBitRate(codec, id, bitRate) {
+  genVideoBitRate(codec: string, id: string, bitRate: ?number): ?string {
     if (
       ('vp9'.localeCompare(codec) === 0 ||
         'vp8'.localeCompare(codec) === 0 ||
@@ -458,7 +435,7 @@ export default class Publisher {
     return undefined
   }
 
-  genAudioBitRate(codec, id, bitRate) {
+  genAudioBitRate(codec: string, id: string, bitRate: ?number): ?string {
     if (
       ('opus'.localeCompare(codec) === 0 ||
         'isac'.localeCompare(codec) === 0 ||
@@ -473,7 +450,7 @@ export default class Publisher {
     return undefined
   }
 
-  getrtpMapID(line) {
+  getrtpMapID(line: string) {
     const found = line.match(new RegExp('a=rtpmap:(\\d+) (\\w+)/(\\d+)'))
     return found && found.length >= 3 ? found : null
   }
