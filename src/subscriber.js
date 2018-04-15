@@ -42,12 +42,12 @@ export default class Subscriber {
           logger.info('ON ICE CANDIDATE', event)
         }
         if (typeof this.pc.ontrack === 'undefined') {
-          this.pc.onaddstream = function (event) {
+          this.pc.onaddstream = function(event) {
             logger.info('ON ADD STREAM', event)
             this.stream = event.stream
           }.bind(this)
         } else {
-          this.pc.ontrack = function (event) {
+          this.pc.ontrack = function(event) {
             logger.info('ON TRACK', event)
             this.stream = event.streams[0]
           }.bind(this)
@@ -122,7 +122,8 @@ export default class Subscriber {
           if (data.sdp !== undefined) {
             this.setRemoteDescription(data)
               .then(() => {
-                return this.pc.createAnswer()
+                return this.pc
+                  .createAnswer()
                   .then(description => this.setLocalDescription(description))
               })
               .then(this.sendAnswer.bind(this))
@@ -162,8 +163,7 @@ export default class Subscriber {
 
   setLocalDescription(description: RTCSessionDescription.prototype) {
     logger.info('SET LOCAL DESCRIPTION', description)
-    return this.pc.setLocalDescription(description)
-      .then(() => description)
+    return this.pc.setLocalDescription(description).then(() => description)
   }
 
   setRemoteDescription(description: any) {
